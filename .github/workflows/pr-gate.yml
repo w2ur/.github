@@ -1,0 +1,334 @@
+name: pr-gate
+
+# Reusable PR gate. A caller adds six lines; everything below is derived.
+#
+# The one rule this file exists to enforce:
+#
+#   Un contrôle qui n'a pas tourné ne doit jamais ressembler à un contrôle
+#   qui est passé.
+#
+# In GitHub Actions that is not the default. A job excluded by `if:` reports
+# `skipped`; a job dropped from a `needs:` list reports nothing at all; both
+# read as "not a failure". So `gate` never asks "did anything fail?" — it asks
+# "is every check that was SUPPOSED to run present and green?", against a list
+# `detect` computes up front. The naive form of that check is worse than none:
+#
+#   $ echo '{}' | jq -e 'all(.[]; .result == "success")'
+#   true          # exit 0 — a gate with zero coverage reports success
+#
+# Vacuous truth is the whole hazard. `gate` closes it two ways: it iterates the
+# EXPECTED list rather than whatever happens to be in `needs`, and it refuses an
+# empty EXPECTED outright. `leaks` is unconditional so EXPECTED is never empty.
+#
+# Stack is detected, never declared: no caller passes a parameter describing
+# what it is. Same signals as ~/.claude/scripts/dev-scanner.sh; if the two ever
+# disagree, dev-scanner.sh is the source of truth.
+#
+# Only GitHub-owned actions (actions/*) are referenced, by tag. There is no
+# third-party action in the trust path — gitleaks is fetched as a pinned binary
+# — which is why nothing here is pinned to a commit SHA.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node major. Vercel's ceiling is 24 — do not raise past it."
+        type: string
+        default: "24"
+        required: false
+      extra-env:
+        description: |
+          KEY=VALUE lines exported before every npm script. For callers whose
+          build reads the environment — the hub passes CI=false so
+          build-inventory.mjs keeps its committed snapshot instead of crawling
+          the GitHub API on every PR.
+        type: string
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  detect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      expected: ${{ steps.d.outputs.expected }}
+      has_lint: ${{ steps.d.outputs.has_lint }}
+      has_typecheck: ${{ steps.d.outputs.has_typecheck }}
+      typecheck_script: ${{ steps.d.outputs.typecheck_script }}
+      has_test: ${{ steps.d.outputs.has_test }}
+      has_build: ${{ steps.d.outputs.has_build }}
+      has_ruff: ${{ steps.d.outputs.has_ruff }}
+      has_pytest: ${{ steps.d.outputs.has_pytest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deduce the stack from the tree
+        id: d
+        run: |
+          set -euo pipefail
+          has() { jq -e --arg s "$1" '.scripts[$s] // empty' package.json >/dev/null 2>&1; }
+
+          has_lint=false; has_typecheck=false; typecheck_script=""
+          has_test=false; has_build=false; has_ruff=false; has_pytest=false
+
+          if [ -f package.json ]; then
+            has lint  && has_lint=true
+            has test  && has_test=true
+            has build && has_build=true
+            # `typecheck` is the convention; Astro repos call it `check`.
+            if   has typecheck; then has_typecheck=true; typecheck_script=typecheck
+            elif has check;     then has_typecheck=true; typecheck_script=check
+            fi
+          fi
+
+          if [ -f pyproject.toml ]; then
+            grep -q '^\[tool\.ruff'   pyproject.toml && has_ruff=true
+            grep -q '^\[tool\.pytest' pyproject.toml && has_pytest=true
+          fi
+
+          # `leaks` is unconditional — that is what keeps EXPECTED non-empty.
+          expected='["leaks"]'
+          add() { expected=$(jq -c --arg j "$1" '. + [$j]' <<<"$expected"); }
+          [ "$has_lint"      = true ] && add lint
+          [ "$has_typecheck" = true ] && add typecheck
+          [ "$has_test"      = true ] && add test
+          [ "$has_build"     = true ] && add build
+          [ "$has_ruff"      = true ] && add ruff
+          [ "$has_pytest"    = true ] && add pytest
+
+          {
+            echo "has_lint=$has_lint"
+            echo "has_typecheck=$has_typecheck"
+            echo "typecheck_script=$typecheck_script"
+            echo "has_test=$has_test"
+            echo "has_build=$has_build"
+            echo "has_ruff=$has_ruff"
+            echo "has_pytest=$has_pytest"
+            echo "expected=$expected"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Contrôles attendus"
+            jq -r '.[] | "- `\(.)`"' <<<"$expected"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --- Node ------------------------------------------------------------------
+  # Four separate jobs rather than one job with four steps, and rather than a
+  # nested reusable workflow (a `uses: ./…` inside a remote reusable workflow
+  # resolves against the CALLER's repository, which would silently break every
+  # caller). Each check is then independently visible and independently red.
+  # The cost is `npm ci` four times; at this portfolio's PR volume that is a
+  # few minutes a month against the 2 000-minute private allowance.
+  lint:
+    needs: detect
+    if: needs.detect.outputs.has_lint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: npm run lint
+        run: |
+          set -a
+          ${{ inputs.extra-env }}
+          set +a
+          npm run lint
+
+  typecheck:
+    needs: detect
+    if: needs.detect.outputs.has_typecheck == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: npm run ${{ needs.detect.outputs.typecheck_script }}
+        env:
+          SCRIPT: ${{ needs.detect.outputs.typecheck_script }}
+        run: |
+          set -a
+          ${{ inputs.extra-env }}
+          set +a
+          npm run "$SCRIPT"
+
+  test:
+    needs: detect
+    if: needs.detect.outputs.has_test == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: npm test
+        run: |
+          set -a
+          ${{ inputs.extra-env }}
+          set +a
+          npm test
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.has_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - name: npm run build
+        run: |
+          set -a
+          ${{ inputs.extra-env }}
+          set +a
+          npm run build
+
+  # --- Python ----------------------------------------------------------------
+  ruff:
+    needs: detect
+    if: needs.detect.outputs.has_ruff == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  pytest:
+    needs: detect
+    if: needs.detect.outputs.has_pytest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install -e .; fi
+      - run: pytest -q
+
+  # --- Secrets ---------------------------------------------------------------
+  # Unconditional, on every repo. Complements the local secret-scan hook, which
+  # only ever sees what Claude writes on this machine — not what arrives from a
+  # worktree, a second machine, or the GitHub web editor.
+  leaks:
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        env:
+          # Pinned, and fetched as a binary rather than via gitleaks-action:
+          # no third-party action in the trust path, and no licence question if
+          # a repo ever moves under an organisation.
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "$url" | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan the PR diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASE:-}" ] && [ -n "${HEAD:-}" ]; then
+            echo "Scanning $BASE..$HEAD"
+            gitleaks detect --no-banner --redact --source . --log-opts "$BASE..$HEAD"
+          else
+            echo "Not a pull_request event — scanning $SHA only"
+            gitleaks detect --no-banner --redact --source . --log-opts "-1 $SHA"
+          fi
+
+  # ---------------------------------------------------------------------------
+  gate:
+    # The only job a branch protection rule should ever require.
+    needs: [detect, lint, typecheck, test, build, ruff, pytest, leaks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aucun contrôle ne peut être vert par omission
+        env:
+          # Through the environment, not interpolated into the script body:
+          # ${{ }} inside `run:` is textual substitution into a shell.
+          NEEDS: ${{ toJSON(needs) }}
+          EXPECTED: ${{ needs.detect.outputs.expected }}
+        run: |
+          set -uo pipefail
+          fail=0
+
+          # 0. detect must have succeeded, or EXPECTED is not trustworthy.
+          detect_result=$(jq -r '.detect.result // "ABSENT"' <<<"$NEEDS")
+          if [ "$detect_result" != "success" ]; then
+            echo "::error::detect = $detect_result — la liste des contrôles attendus n'est pas fiable"
+            exit 1
+          fi
+
+          # 1. The floor: an empty expectation is never a pass.
+          if [ "$(jq -r 'length' <<<"$EXPECTED")" -eq 0 ]; then
+            echo "::error::aucun contrôle attendu — une porte sans attente est verte par omission"
+            exit 1
+          fi
+
+          # 2. Every expected job present AND green. Catches a job dropped from
+          #    `needs:` (ABSENT) and a job silenced by `if:` (skipped).
+          echo "--- contrôles attendus ---"
+          while IFS= read -r job; do
+            res=$(jq -r --arg j "$job" '.[$j].result // "ABSENT"' <<<"$NEEDS")
+            if [ "$res" = "success" ]; then
+              printf '  ok        %-12s %s\n' "$job" "$res"
+            else
+              printf '  MANQUANT  %-12s %s\n' "$job" "$res"
+              echo "::error::$job était attendu et vaut '$res'"
+              fail=1
+            fi
+          done < <(jq -r '.[]' <<<"$EXPECTED")
+
+          # 3. Nothing that ran may have failed, expected or not.
+          while IFS= read -r job; do
+            res=$(jq -r --arg j "$job" '.[$j].result' <<<"$NEEDS")
+            case "$res" in
+              success|skipped) ;;
+              *) echo "::error::$job = $res"; fail=1 ;;
+            esac
+          done < <(jq -r 'keys[]' <<<"$NEEDS")
+
+          if [ "$fail" -eq 0 ]; then
+            echo "Porte verte : tous les contrôles attendus ont tourné et sont passés."
+          fi
+          exit "$fail"
