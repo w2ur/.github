@@ -36,6 +36,22 @@ does. Two optional inputs exist for cases the tree cannot express:
 | `node-version` | `24` | Vercel's ceiling is 24 — do not raise past it. |
 | `extra-env` | `""` | `KEY=VALUE` lines exported before every npm script. |
 
+## Adding a caller
+
+```bash
+mkdir -p <repo>/.github/workflows
+cp ~/Dev/.github/templates/caller.yml <repo>/.github/workflows/pr-gate.yml
+```
+
+`templates/caller.yml` is the copy-paste source and carries the two checks worth
+making before opening the PR: absorb any existing `ci.yml` rather than running
+both, and pass `extra-env` if the build reads the environment.
+
+`~/.claude/scripts/gate-watch.sh` reports which repos have crossed into needing
+one — repos discovered from `gh search prs`, never hand-listed. `/new-app`
+scaffolds the caller into every new repo, so coverage does not depend on anyone
+remembering.
+
 ## What it runs
 
 Detected from the tree, never declared:

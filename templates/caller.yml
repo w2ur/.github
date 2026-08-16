@@ -1,0 +1,33 @@
+name: pr-gate
+
+# Copy to <repo>/.github/workflows/pr-gate.yml. Nothing below describes the
+# stack — the shared workflow reads the tree. See w2ur/.github/README.md.
+#
+# Before opening the PR, check two things:
+#   1. Does the repo already have a ci.yml? Absorb it rather than running both;
+#      carry over any comment explaining a deliberate trigger choice.
+#   2. Does the build read the environment? If so, pass it via extra-env below
+#      (the hub passes CI=false so its prebuild does not crawl the GitHub API).
+
+on:
+  push:
+    branches: [main]
+  # Deliberately unfiltered by base branch. A `branches: [main]` filter here
+  # means a PR stacked onto a feature branch runs no CI at all — that shipped
+  # once already, 32 commits deep.
+  pull_request:
+
+concurrency:
+  group: pr-gate-${{ github.ref }}
+  # Superseding a PR run is free — the newer commit is what matters. On main
+  # each commit is already published, so every run must complete: cancelling
+  # one leaves a commit on main with no verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    uses: w2ur/.github/.github/workflows/pr-gate.yml@main
+    with:
+      node-version: "24"
+      # extra-env: |
+      #   CI=false
