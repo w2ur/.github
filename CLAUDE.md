@@ -11,20 +11,11 @@ Everything here exists to make one sentence true in CI:
 > passé.
 
 If a change makes `gate` simpler but loses that, the change is wrong. In
-particular, **never** replace `gate`'s explicit loop with the shorter form:
-
-```bash
-jq -e 'all(.[]; .result == "success")'   # WRONG
-```
-
-`all` over an empty collection returns `true`. Drop a job from `needs:` and that
-expression exits 0 on zero coverage — the exact failure the job exists to catch.
-This was measured, not assumed:
-
-```console
-$ echo '{}' | jq -e 'all(.[]; .result == "success")'
-true
-```
+particular, **never** replace `gate`'s explicit loop with the shorter form
+`jq -e 'all(.[]; .result == "success")'` — `all` over an empty collection
+returns `true`, so dropping a job from `needs:` makes that expression exit 0
+on zero coverage, the exact failure the job exists to catch (see the global
+CLAUDE.md CI-gate rule for the measurement).
 
 `gate` therefore iterates `EXPECTED` — the list `detect` computed up front — and
 rejects an empty `EXPECTED` outright. `leaks` is unconditional so `EXPECTED` can
@@ -32,8 +23,9 @@ never be empty. Removing that unconditionality reopens the hole.
 
 ## Changing gate means running the tests
 
-`tests/gate-test.sh` is a plain shell harness with no GitHub dependency. Twelve
-cases, nine of which must be **red**. Run it before and after any edit to the
+`tests/gate-test.sh` is a plain shell harness with no GitHub dependency
+(`grep -c '^t ' tests/gate-test.sh` for the current case count; the red cases
+are listed before the green ones in the same file). Run it before and after any edit to the
 `gate` job, and keep the two scripts in sync — the `run:` block in
 `.github/workflows/pr-gate.yml` and `tests/gate.sh` are the same logic
 deliberately duplicated, because CI cannot source a file from the repo it is
@@ -52,51 +44,30 @@ The duplication is deliberate; leave it.
 
 ## Callers, and why so few
 
-Three repos call this, chosen on measured PR traffic rather than coverage for
-its own sake:
+Caller selection and the branch-protection consequences are already covered in
+the global CLAUDE.md — same rationale, same conclusion (private repos here get
+an advisory `gate`, not an enforced one). Find the current callers with:
 
-| Repo | PRs / 90d | Note |
-|---|---|---|
-| `william-revah-paris` | 4 | had no PR CI at all before this |
-| `belle-forme` | 8 | absorbed its own `ci.yml` |
-| `midas` | 32 | **does not call this** — see below |
+    grep -rl 'uses: w2ur/\.github/\.github/workflows/pr-gate\.yml' */.github/workflows/*.yml
 
-`midas` keeps its own `tests.yml`: it has documented `paths-ignore` reasoning, a
-conditional `cancel-in-progress`, and a dual Python/Node suite that this generic
-workflow would replace with something worse. It got the same invariant instead —
-a `gate` job added to its existing workflow.
+The one thing worth stating here: `midas` deliberately does **not** call this
+reusable workflow. It has documented `paths-ignore` reasoning, a conditional
+`cancel-in-progress`, and a dual Python/Node suite that this generic workflow
+would replace with something worse. It carries the same `gate` invariant
+inline in its own `tests.yml` instead.
 
-The other 19 repos had **zero** PRs in 90 days. Adding a PR gate to a repo that
-never sees a PR is not coverage, it is decoration.
-
-## Branch protection does not exist on the private repos
-
-Measured 2026-08-15:
-
-```console
-$ gh api repos/w2ur/vigie/branches/main/protection
-{"message":"Upgrade to GitHub Pro or make this repository public…","status":"403"}
-$ gh api repos/w2ur/vigie/rulesets
-{"message":"Upgrade to GitHub Pro or make this repository public…","status":"403"}
-```
-
-Rulesets are 403 too, so there is no free fallback. All three callers are
-private. **`gate` is therefore advisory on all of them** — a red X on the PR,
-not a block on the merge button. Do not write documentation that claims
-otherwise, and do not "fix" it by upgrading to Pro; the portfolio runs on free
-tiers by policy.
-
-If enforcement becomes necessary, the honest options are: make the repo public,
-or have the repo's own merge automation read `gate`'s conclusion via the API
-before merging.
+If enforcement ever becomes necessary on a private caller, the honest options
+are: make the repo public, or have the repo's own merge automation read
+`gate`'s conclusion via the API before merging.
 
 ## `extra-env` exists for one measured reason
 
 `william-revah-paris` passes `CI=false`. Its `prebuild` runs
 `scripts/build-inventory.mjs`, whose `shouldWriteInventory()` returns true when
 `CI` is set — which on a runner means every PR build would crawl the GitHub API
-across the whole portfolio (~3 requests × 26 repos, unauthenticated, against a
-60/hour limit) and then discard the result. The script's own docblock documents
+across the whole portfolio (3 requests per repo — see `getReposToInventory()`
+for the current repo count — unauthenticated, against a 60/hour limit) and then
+discard the result. The script's own docblock documents
 the escape hatch: *"A variable set to the string `false` or `0` reads as unset,
 which is how CI systems disable one."* That is the supported path, not a hack.
 
