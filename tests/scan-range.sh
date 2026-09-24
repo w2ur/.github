@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prints the gitleaks --log-opts value for a push range. Same logic as the
-# "Scan the PR diff" step in .github/workflows/pr-gate.yml, deliberately
+# "Scan the PR or push range" step in .github/workflows/pr-gate.yml, deliberately
 # duplicated there for the same reason gate.sh is duplicated into the `gate`
 # job's run: block — CI cannot source a file from the repo it is gating.
 #

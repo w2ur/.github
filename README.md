@@ -91,7 +91,7 @@ are never required directly; requiring them individually reintroduces exactly
 the hole `gate` closes, because a rule can only require a check it already knows
 the name of.
 
-## `leaks` scans a range, never a single commit in isolation
+## `leaks` scans a range when it can, the tip commit alone otherwise
 
 On `pull_request`, `leaks` scans `base..head`. On `push`, it scans
 `github.event.before..github.sha` — every commit the push introduced, not just
