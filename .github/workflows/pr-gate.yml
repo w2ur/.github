@@ -259,18 +259,28 @@ jobs:
           curl -sSfL "$url" | tar -xz -C /usr/local/bin gitleaks
           gitleaks version
 
-      - name: Scan the PR diff
+      - name: Scan the PR or push range
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          # On a push event, BEFORE..SHA covers every commit in the push, not
+          # just the last one. tests/scan-range.sh carries the same fallback
+          # logic, deliberately duplicated here for the reason documented next
+          # to `gate` above: CI cannot source a file from the repo it is
+          # gating. Keep the two in sync; tests/scan-range-test.sh covers it.
+          BEFORE: ${{ github.event.before }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          zero="0000000000000000000000000000000000000000"
           if [ -n "${BASE:-}" ] && [ -n "${HEAD:-}" ]; then
             echo "Scanning $BASE..$HEAD"
             gitleaks detect --no-banner --redact --source . --log-opts "$BASE..$HEAD"
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "$zero" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "Scanning $BEFORE..$SHA"
+            gitleaks detect --no-banner --redact --source . --log-opts "$BEFORE..$SHA"
           else
-            echo "Not a pull_request event — scanning $SHA only"
+            echo "No usable range (new branch, force-push, or shallow history) — scanning $SHA only"
             gitleaks detect --no-banner --redact --source . --log-opts "-1 $SHA"
           fi
 

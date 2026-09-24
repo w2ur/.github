@@ -34,6 +34,12 @@ gating.
 If you add a case, make it fail first. A case that has never been red proves
 nothing.
 
+The same duplication pattern applies to `leaks`' push-range fallback:
+`tests/scan-range.sh` / `tests/scan-range-test.sh` and the "Scan the PR or push
+range" step's `run:` block in `pr-gate.yml` are the same logic, deliberately
+kept in two places for the same reason. Run `tests/scan-range-test.sh` before
+and after any edit to that step.
+
 ## Do not nest reusable workflows here
 
 An earlier draft factored the four Node jobs into a `_node-step.yml` called with

@@ -58,7 +58,7 @@ Detected from the tree, never declared:
 
 | Job | Runs when |
 |---|---|
-| `leaks` | always — gitleaks over the PR diff |
+| `leaks` | always — gitleaks over the PR diff, or the whole push range |
 | `lint` | `package.json` has a `lint` script |
 | `typecheck` | has a `typecheck` script, or `check` (Astro) |
 | `test` | has a `test` script |
@@ -90,6 +90,22 @@ guarantees the list is never empty.
 are never required directly; requiring them individually reintroduces exactly
 the hole `gate` closes, because a rule can only require a check it already knows
 the name of.
+
+## `leaks` scans a range, never a single commit in isolation
+
+On `pull_request`, `leaks` scans `base..head`. On `push`, it scans
+`github.event.before..github.sha` — every commit the push introduced, not just
+the tip — falling back to `-1 SHA` (the tip commit only) when `before` cannot
+anchor a real range: empty, all-zeros (new branch), or a sha this checkout has
+never seen (force-push, or history shallower than `before`). `leaks`' own
+checkout already uses `fetch-depth: 0`, so the fallback in practice only fires
+on a genuinely new branch or a force-push, not on a truncated history.
+
+`tests/scan-range.sh` holds that fallback logic and `tests/scan-range-test.sh`
+drives it through the four cases above. The "Scan the PR or push range" step in
+`.github/workflows/pr-gate.yml` carries the same logic inline — CI cannot
+source a script from the repo it is gating, the same reason `gate.sh` is
+duplicated into the `gate` job below. Keep the two in sync.
 
 ## Verifying a change to the gate
 
